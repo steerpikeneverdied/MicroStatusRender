@@ -23,6 +23,8 @@ from .display.sketch_surface import (
     OLED_HEIGHT,
     OLED_WIDTH,
     ease_out_cubic,
+    format_metric_number,
+    format_value_with_unit,
     metric_contrast_for_fade_progress,
     metric_page_has_overflow,
     metric_value_progress_for_row,
@@ -724,21 +726,29 @@ def _normalize_item_dict(item: dict[str, Any]) -> dict[str, Any]:
     item_type = str(item.get("value_type") or item.get("type") or "text").lower()
     title = sanitize_display_text(str(item.get("title") or ""), MAX_TITLE_STORAGE_CHARS)
     if item_type == "bar":
+        current_value = float(item.get("current_value", item.get("current", 0.0)))
+        unit = sanitize_display_text(str(item.get("unit") or ""), MAX_UNIT_STORAGE_CHARS)
         return {
             "title": title,
             "value_type": "bar",
             "min_value": float(item.get("min_value", item.get("min", 0.0))),
             "max_value": float(item.get("max_value", item.get("max", 100.0))),
-            "current_value": float(item.get("current_value", item.get("current", 0.0))),
+            "current_value": current_value,
             "segment_count": min(MAX_BAR_SEGMENTS, int(item.get("segment_count", item.get("segments", DEFAULT_BAR_SEGMENTS)))),
-            "unit": sanitize_display_text(str(item.get("unit") or ""), MAX_UNIT_STORAGE_CHARS),
+            "unit": unit,
             "show_current_value": parse_bool(item.get("show_current_value", item.get("show_value")), False),
+            "_display_title": title,
+            "_display_bar_value_text": format_value_with_unit(format_metric_number(current_value), unit),
         }
+    value = sanitize_display_text(str(item.get("value") or ""), MAX_VALUE_STORAGE_CHARS)
+    unit = sanitize_display_text(str(item.get("unit") or ""), MAX_UNIT_STORAGE_CHARS)
     return {
         "title": title,
         "value_type": "text",
-        "value": sanitize_display_text(str(item.get("value") or ""), MAX_VALUE_STORAGE_CHARS),
-        "unit": sanitize_display_text(str(item.get("unit") or ""), MAX_UNIT_STORAGE_CHARS),
+        "value": value,
+        "unit": unit,
+        "_display_title": title,
+        "_display_value_text": format_value_with_unit(value, unit),
     }
 
 

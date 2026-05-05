@@ -137,6 +137,10 @@ def metric_marquee_gap_px() -> int:
 
 def metric_marquee_offset_px(text: str, width_px: int, elapsed_ms: int) -> int:
     text_width = measure_metric_text(text)
+    return metric_marquee_offset_for_width(text_width, width_px, elapsed_ms)
+
+
+def metric_marquee_offset_for_width(text_width: int, width_px: int, elapsed_ms: int) -> int:
     if text_width <= width_px:
         return 0
     cycle_width = text_width + metric_marquee_gap_px()
@@ -169,12 +173,18 @@ def status_glyph_for(char: str) -> tuple[int, ...]:
 
 
 def format_metric_line_parts(item: dict) -> tuple[str, str]:
-    title = sanitize_display_text(str(item.get("title") or ""), MAX_TITLE_STORAGE_CHARS)
+    if "_display_title" in item:
+        title = str(item.get("_display_title") or "")
+    else:
+        title = sanitize_display_text(str(item.get("title") or ""), MAX_TITLE_STORAGE_CHARS)
     if item.get("value_type") == "text":
-        value = format_value_with_unit(
-            sanitize_display_text(str(item.get("value") or ""), MAX_VALUE_STORAGE_CHARS),
-            sanitize_display_text(str(item.get("unit") or ""), MAX_UNIT_STORAGE_CHARS),
-        )
+        if "_display_value_text" in item:
+            value = str(item.get("_display_value_text") or "")
+        else:
+            value = format_value_with_unit(
+                sanitize_display_text(str(item.get("value") or ""), MAX_VALUE_STORAGE_CHARS),
+                sanitize_display_text(str(item.get("unit") or ""), MAX_UNIT_STORAGE_CHARS),
+            )
     else:
         value = ""
     return title, value
@@ -191,6 +201,8 @@ def metric_page_has_overflow(items: list[dict]) -> bool:
 
 
 def bar_current_value_text(item: dict) -> str:
+    if "_display_bar_value_text" in item:
+        return str(item.get("_display_bar_value_text") or "")
     return format_value_with_unit(
         format_metric_number(float(item.get("current_value") or 0.0)),
         sanitize_display_text(str(item.get("unit") or ""), MAX_UNIT_STORAGE_CHARS),
@@ -215,12 +227,13 @@ class SketchCanvas:
         self.width = width
         self.height = height
         self.buffer = bytearray((width * height) // 8)
+        self._clear_buffer = bytes(len(self.buffer))
         self._metric_sprite_cache: dict[str, ColumnSprite] = {}
         self._status_sprite_cache: dict[str, ColumnSprite] = {}
         self._bar_sprite_cache: dict[tuple[int, int, int], ColumnSprite] = {}
 
     def clear(self) -> None:
-        self.buffer[:] = b"\x00" * len(self.buffer)
+        self.buffer[:] = self._clear_buffer
 
     def draw_pixel(self, x: int, y: int, color: bool) -> None:
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
@@ -307,7 +320,7 @@ class SketchCanvas:
         if text_width <= width_px:
             self._blit_sprite_clipped(sprite, x, y, x, width_px)
             return
-        offset_px = metric_marquee_offset_px(text, width_px, elapsed_ms)
+        offset_px = metric_marquee_offset_for_width(text_width, width_px, elapsed_ms)
         gap_px = metric_marquee_gap_px()
         self._blit_sprite_clipped(sprite, x - offset_px, y, x, width_px)
         self._blit_sprite_clipped(sprite, x + text_width + gap_px - offset_px, y, x, width_px)
