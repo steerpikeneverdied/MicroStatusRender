@@ -75,6 +75,7 @@ class SSD1306Display:
         self._page_data_buffers = [bytearray(1 + self.width) for _ in range(self._page_count)]
         for buffer in self._page_data_buffers:
             buffer[0] = 0x40
+        self._last_sent_pages: list[bytes | None] = [None] * self._page_count
         self._bus = None
 
         try:
@@ -102,9 +103,13 @@ class SSD1306Display:
         else:
             self._canvas.render_metric(frame)
 
+        enabled = bool(frame.get("enabled", True))
         self._set_contrast(int(frame.get("contrast", DEFAULT_OLED_CONTRAST)))
-        self._set_display_enabled(bool(frame.get("enabled", True)))
-        self._display_canvas()
+        self._set_display_enabled(enabled)
+        if enabled:
+            self._display_canvas()
+        else:
+            self._last_sent_pages = [None] * self._page_count
 
     def _open_bus(self) -> None:
         self._close_bus()
@@ -126,7 +131,8 @@ class SSD1306Display:
             try:
                 self._write_command_list(self._INIT_COMMANDS)
                 self._canvas.clear()
-                self._display_canvas()
+                self._last_sent_pages = [None] * self._page_count
+                self._display_canvas(force=True)
                 return
             except (OSError, TimeoutError) as exc:
                 last_error = exc
@@ -154,15 +160,21 @@ class SSD1306Display:
         LOGGER.info("OLED recovery succeeded")
         return True
 
-    def _display_canvas(self) -> None:
+    def _display_canvas(self, *, force: bool = False) -> None:
         page_bytes = memoryview(self._canvas.buffer)
         for page in range(self._page_count):
             start = page * self.width
             end = start + self.width
+            current_page = page_bytes[start:end]
+            if not force and self._last_sent_pages[page] == current_page:
+                continue
             data_buffer = self._page_data_buffers[page]
-            data_buffer[1:] = page_bytes[start:end]
-            self._bus.i2c_rdwr(self._i2c_msg.write(self.address, self._page_setup_packets[page]))
-            self._bus.i2c_rdwr(self._i2c_msg.write(self.address, data_buffer))
+            data_buffer[1:] = current_page
+            self._bus.i2c_rdwr(
+                self._i2c_msg.write(self.address, self._page_setup_packets[page]),
+                self._i2c_msg.write(self.address, data_buffer),
+            )
+            self._last_sent_pages[page] = bytes(current_page)
 
     def _set_contrast(self, contrast: int) -> None:
         contrast = max(0, min(255, int(contrast)))

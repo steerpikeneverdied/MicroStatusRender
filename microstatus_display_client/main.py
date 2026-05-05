@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from .client import MicrostatusApiClient, MicrostatusApiError, MicrostatusClientConfig
 from .display.console import ConsoleDisplay
 from .display.null import NullDisplay
-from .display.sketch_surface import DISPLAY_FRAME_INTERVAL_MS, ITEMS_PER_METRIC_PAGE
+from .display.sketch_surface import ITEMS_PER_METRIC_PAGE
 from .display.ssd1306 import DisplayInitError, SSD1306Display
 from .renderer import MicrostatusRenderer
 
@@ -28,6 +28,7 @@ class DisplayRuntimeConfig:
     poll_interval: float
     mode: str
     auth_token: str | None
+    heartbeat_interval: float
     i2c_bus: int
     oled_address: int
     oled_width: int
@@ -47,6 +48,7 @@ def load_config() -> DisplayRuntimeConfig:
         poll_interval=max(0.2, _read_float(os.getenv("MICROSTATUS_POLL_INTERVAL"), 1.0)),
         mode=(os.getenv("MICROSTATUS_DISPLAY_MODE") or "auto").strip().lower(),
         auth_token=os.getenv("MICROSTATUS_API_TOKEN"),
+        heartbeat_interval=max(1.0, _read_float(os.getenv("MICROSTATUS_HEARTBEAT_INTERVAL"), 10.0)),
         i2c_bus=_read_int(os.getenv("MICROSTATUS_I2C_BUS"), 1),
         oled_address=_read_int(os.getenv("MICROSTATUS_OLED_ADDRESS"), 0x3C, base=0),
         oled_width=_read_int(os.getenv("MICROSTATUS_OLED_WIDTH"), 128),
@@ -106,44 +108,55 @@ def run_forever() -> None:
         )
     )
     capabilities = build_capabilities(config)
+    metadata = build_metadata(display_backend)
     renderer.show_connecting()
     gc.disable()
 
-    frame_interval_seconds = DISPLAY_FRAME_INTERVAL_MS / 1000.0
-    next_frame_at = time.perf_counter()
     state_lock = threading.Lock()
+    state_event = threading.Event()
     stop_event = threading.Event()
     state = {"version": 0, "body": None, "error": None}
 
     def publish(*, body: str | None = None, error: str | None = None) -> None:
         with state_lock:
+            if state["body"] == body and state["error"] == error:
+                return
             state["version"] += 1
             state["body"] = body
             state["error"] = error
+        state_event.set()
 
     def poll_loop() -> None:
         registered = False
+        last_heartbeat_at = 0.0
         while not stop_event.is_set():
-            metadata = build_metadata(display_backend)
+            now = time.perf_counter()
             try:
                 if not registered:
                     client.register_display(capabilities=capabilities, metadata=metadata)
                     registered = True
-                client.heartbeat(capabilities=capabilities, metadata=metadata, status="online")
+                    last_heartbeat_at = now
+                elif now - last_heartbeat_at >= config.heartbeat_interval:
+                    client.heartbeat(capabilities=capabilities, metadata=metadata, status="online")
+                    last_heartbeat_at = now
                 publish(body=client.fetch_render_body(), error=None)
             except MicrostatusApiError as error:
                 registered = False
+                last_heartbeat_at = 0.0
                 publish(body=None, error=str(error))
             except Exception as error:  # pragma: no cover - defensive runtime fallback
                 registered = False
+                last_heartbeat_at = 0.0
                 publish(body=None, error=str(error))
             stop_event.wait(config.poll_interval)
 
     threading.Thread(target=poll_loop, name="microstatus-poll", daemon=True).start()
     last_seen_version = -1
+    next_frame_at: float | None = time.perf_counter()
 
     try:
         while True:
+            state_event.clear()
             now = time.perf_counter()
             with state_lock:
                 version = int(state["version"])
@@ -155,27 +168,19 @@ def run_forever() -> None:
                     renderer.show_disconnected(str(error), now=now)
                 elif body is not None:
                     renderer.update_payload(str(body), now=now)
+                next_frame_at = now
 
-            if now >= next_frame_at:
+            if next_frame_at is not None and now >= next_frame_at:
                 renderer.render_next_frame(now=now)
-                next_frame_at += frame_interval_seconds
-                if now - next_frame_at > frame_interval_seconds:
-                    next_frame_at = now + frame_interval_seconds
+                next_delay = renderer.next_frame_delay_seconds(now=now)
+                next_frame_at = None if next_delay is None else now + next_delay
 
-            _wait_until(next_frame_at)
+            wait_seconds = None if next_frame_at is None else max(0.0, next_frame_at - time.perf_counter())
+            state_event.wait(wait_seconds)
     finally:
         stop_event.set()
+        state_event.set()
         gc.enable()
-
-
-def _wait_until(deadline: float, *, spin_window_seconds: float = 0.0015) -> None:
-    while True:
-        remaining = deadline - time.perf_counter()
-        if remaining <= 0:
-            return
-        if remaining > spin_window_seconds:
-            time.sleep(remaining - spin_window_seconds)
-            continue
 
 
 def main() -> None:

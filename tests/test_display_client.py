@@ -8,6 +8,9 @@ from microstatus_display_client.client import MicrostatusApiClient, MicrostatusC
 from microstatus_display_client.display.console import ConsoleDisplay
 from microstatus_display_client.display.null import NullDisplay
 from microstatus_display_client.display.sketch_surface import (
+    BAR_VALUE_SWAP_MS,
+    DEFAULT_OLED_CONTRAST,
+    DISPLAY_FRAME_INTERVAL_MS,
     ITEMS_PER_METRIC_PAGE,
     METRIC_MARQUEE_STEP_MS,
     METRIC_PAGE_HOLD_MS,
@@ -215,6 +218,19 @@ class DisplayClientTests(unittest.TestCase):
 
         self.assertEqual(len(display.frames), frame_count_at_hold)
 
+    def test_static_hold_page_schedules_next_page_transition_without_frame_polling(self):
+        display = FakeDisplay()
+        renderer = MicrostatusRenderer(display, monotonic=lambda: 0.0)
+        payload = "Temp\n21\nPrinter\nReady\nPhase\nIdle\n"
+        renderer.update_payload(payload, now=0.0)
+        hold_time = (METRIC_TITLE_SCROLL_MS + METRIC_VALUE_REVEAL_MS + (2 * METRIC_VALUE_STAGGER_MS) + 2) / 1000
+
+        renderer.render_next_frame(now=0.0)
+        renderer.render_next_frame(now=(METRIC_TITLE_SCROLL_MS + 1) / 1000)
+        renderer.render_next_frame(now=hold_time)
+
+        self.assertGreater(renderer.next_frame_delay_seconds(now=hold_time), 9.9)
+
     def test_hold_page_redraws_only_when_marquee_step_changes(self):
         display = FakeDisplay()
         renderer = MicrostatusRenderer(display, monotonic=lambda: 0.0)
@@ -237,6 +253,50 @@ class DisplayClientTests(unittest.TestCase):
 
         renderer.render_next_frame(now=hold_time + ((METRIC_MARQUEE_STEP_MS + 10) / 1000.0))
         self.assertEqual(len(display.frames), frame_count_at_hold + 1)
+
+    def test_overflow_hold_schedules_marquee_cadence(self):
+        display = FakeDisplay()
+        renderer = MicrostatusRenderer(display, monotonic=lambda: 0.0)
+        payload = (
+            "Current Print Queue Name That Should Scroll\n"
+            "south-kitchen-production-queue-alpha-very-long-name\n"
+            "Printer\nReady\n"
+            "Phase\nIdle\n"
+        )
+        renderer.update_payload(payload, now=0.0)
+        hold_time = (METRIC_TITLE_SCROLL_MS + METRIC_VALUE_REVEAL_MS + (2 * METRIC_VALUE_STAGGER_MS) + 2) / 1000
+
+        renderer.render_next_frame(now=0.0)
+        renderer.render_next_frame(now=(METRIC_TITLE_SCROLL_MS + 1) / 1000)
+        renderer.render_next_frame(now=hold_time)
+
+        self.assertAlmostEqual(
+            renderer.next_frame_delay_seconds(now=hold_time),
+            METRIC_MARQUEE_STEP_MS / 1000.0,
+            places=3,
+        )
+
+    def test_bar_value_swap_sleeps_until_transition_window(self):
+        display = FakeDisplay()
+        renderer = MicrostatusRenderer(display, monotonic=lambda: 0.0)
+        payload = "Printer\nBAR MIN=0 MAX=100 CURRENT=50 UNIT=% SHOW_VALUE=1\n"
+        renderer.update_payload(payload, now=0.0)
+        hold_time = (METRIC_TITLE_SCROLL_MS + METRIC_VALUE_REVEAL_MS + 2) / 1000
+
+        renderer.render_next_frame(now=0.0)
+        renderer.render_next_frame(now=(METRIC_TITLE_SCROLL_MS + 1) / 1000)
+        renderer.render_next_frame(now=hold_time)
+
+        self.assertAlmostEqual(
+            renderer.next_frame_delay_seconds(now=hold_time),
+            BAR_VALUE_SWAP_MS / 1000.0,
+            places=3,
+        )
+        self.assertAlmostEqual(
+            renderer.next_frame_delay_seconds(now=hold_time + (BAR_VALUE_SWAP_MS + 1) / 1000.0),
+            DISPLAY_FRAME_INTERVAL_MS / 1000.0,
+            places=3,
+        )
 
     def test_status_canvas_renders_expected_pixels(self):
         canvas = SketchCanvas()
@@ -268,6 +328,7 @@ class DisplayClientTests(unittest.TestCase):
             poll_interval=1.0,
             mode="console",
             auth_token=None,
+            heartbeat_interval=10.0,
             i2c_bus=1,
             oled_address=0x3C,
             oled_width=128,
@@ -287,6 +348,7 @@ class DisplayClientTests(unittest.TestCase):
             poll_interval=1.0,
             mode="auto",
             auth_token=None,
+            heartbeat_interval=10.0,
             i2c_bus=1,
             oled_address=0x3C,
             oled_width=128,
@@ -315,6 +377,61 @@ class DisplayClientTests(unittest.TestCase):
         display.render_frame({"mode": "status", "lines": ["A", "B", "C", "D"]})
 
         self.assertEqual(display._render_attempts, 2)
+
+    def test_oled_skips_unchanged_pages_and_updates_only_dirty_pages(self):
+        class _FakeBus:
+            def __init__(self):
+                self.calls = []
+
+            def i2c_rdwr(self, *messages):
+                self.calls.append(messages)
+
+        class _FakeI2CMsg:
+            @staticmethod
+            def write(address, data):
+                return (address, bytes(data))
+
+        display = SSD1306Display.__new__(SSD1306Display)
+        display._address = 0x3C
+        display.width = 128
+        display.height = 32
+        display._page_count = 4
+        display._canvas = SketchCanvas()
+        display._bus = _FakeBus()
+        display._i2c_msg = _FakeI2CMsg()
+        display._page_setup_packets = tuple(bytes([0x00, 0xB0 | page, 0x00, 0x10]) for page in range(4))
+        display._page_data_buffers = [bytearray(129) for _ in range(4)]
+        for buffer in display._page_data_buffers:
+            buffer[0] = 0x40
+        display._last_sent_pages = [None] * 4
+
+        display._display_canvas()
+        self.assertEqual(len(display._bus.calls), 4)
+
+        display._display_canvas()
+        self.assertEqual(len(display._bus.calls), 4)
+
+        display._canvas.draw_pixel(0, 0, True)
+        display._display_canvas()
+        self.assertEqual(len(display._bus.calls), 5)
+
+    def test_oled_blank_frame_disables_panel_without_data_rewrite(self):
+        display = SSD1306Display.__new__(SSD1306Display)
+        display._canvas = SketchCanvas()
+        display._contrast = DEFAULT_OLED_CONTRAST
+        display._display_enabled = True
+        display._page_count = 4
+        display._last_sent_pages = [b"x"] * 4
+        commands = []
+        data_writes = []
+        display._write_command_list = lambda command_bytes: commands.append(command_bytes)
+        display._display_canvas = lambda: data_writes.append(True)
+
+        display._render_frame_impl({"mode": "blank", "enabled": False})
+
+        self.assertEqual(commands, [bytes([0xAE])])
+        self.assertEqual(data_writes, [])
+        self.assertEqual(display._last_sent_pages, [None] * 4)
 
     def test_console_display_renders_stable_output(self):
         console = ConsoleDisplay()

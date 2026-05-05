@@ -9,6 +9,7 @@ from .display.sketch_surface import (
     BAR_VALUE_TRANSITION_MS,
     DEFAULT_BAR_SEGMENTS,
     DEFAULT_OLED_CONTRAST,
+    DISPLAY_FRAME_INTERVAL_MS,
     ITEMS_PER_METRIC_PAGE,
     MAX_BAR_SEGMENTS,
     MAX_TITLE_STORAGE_CHARS,
@@ -32,6 +33,7 @@ from .display.sketch_surface import (
 
 DEFAULT_LAYOUT = {"width": OLED_WIDTH, "height": OLED_HEIGHT, "rows": ITEMS_PER_METRIC_PAGE}
 DEFAULT_FALLBACK = {"title": "Status", "value": "Idle"}
+DISPLAY_FRAME_INTERVAL_SECONDS = DISPLAY_FRAME_INTERVAL_MS / 1000.0
 MAX_RENDER_ITEMS = 24
 SHOW_VALUE_KEYS = {"SHOW_VALUE", "SHOWVALUE", "DISPLAY_VALUE"}
 PHASE_TITLE_INTRO = "title_intro"
@@ -221,6 +223,37 @@ class MicrostatusRenderer:
             self._last_frame = frame
             self._last_visual_signature = visual_signature
         return frame
+
+    def next_frame_delay_seconds(self, *, now: float | None = None) -> float | None:
+        timestamp = self._monotonic() if now is None else now
+        if self._mode == "status":
+            return None
+
+        phase_elapsed_ms = _elapsed_ms(self._phase_started_at, timestamp)
+        hold_elapsed_ms = _elapsed_ms(self._hold_started_at, timestamp) if self._hold_started_at else 0
+
+        if self._phase == PHASE_TITLE_INTRO:
+            remaining_ms = METRIC_TITLE_SCROLL_MS - phase_elapsed_ms
+            return _frame_delay_until(remaining_ms)
+
+        if self._phase == PHASE_VALUE_INTRO:
+            remaining_ms = metric_value_intro_duration_ms(len(self._active_page_items)) - phase_elapsed_ms
+            return _frame_delay_until(remaining_ms)
+
+        if self._phase == PHASE_HOLD:
+            candidates = [METRIC_PAGE_HOLD_MS - phase_elapsed_ms]
+            if self._active_page_overflow:
+                candidates.append(_ms_until_next_step(hold_elapsed_ms, METRIC_MARQUEE_STEP_MS))
+            for item in self._active_page_items:
+                if item.get("value_type") == "bar" and item.get("show_current_value"):
+                    candidates.append(_ms_until_next_bar_visual_change(hold_elapsed_ms))
+            return _delay_from_candidates(candidates)
+
+        if self._phase == PHASE_FADE_OUT:
+            remaining_ms = METRIC_FADE_OUT_MS - phase_elapsed_ms
+            return _frame_delay_until(remaining_ms)
+
+        return DISPLAY_FRAME_INTERVAL_SECONDS
 
     def _metric_frame(self, now: float) -> dict[str, Any]:
         page_items = list(self._active_page_items)
@@ -624,6 +657,36 @@ def _bar_hold_signature(item: dict[str, Any], hold_elapsed_ms: int) -> tuple[Any
     incoming_offset_y = int(float(value_row_height_px) * (1.0 - progress) + 0.5)
     outgoing_offset_y = int(float(value_row_height_px) * progress + 0.5)
     return ("transition", show_bar, incoming_offset_y, outgoing_offset_y)
+
+
+def _frame_delay_until(remaining_ms: int) -> float:
+    if remaining_ms <= 0:
+        return 0.0
+    return min(DISPLAY_FRAME_INTERVAL_SECONDS, float(remaining_ms) / 1000.0)
+
+
+def _delay_from_candidates(candidates: list[int]) -> float:
+    positive_candidates = [candidate for candidate in candidates if candidate > 0]
+    if not positive_candidates:
+        return 0.0
+    return float(min(positive_candidates)) / 1000.0
+
+
+def _ms_until_next_step(elapsed_ms: int, step_ms: int) -> int:
+    if step_ms <= 0:
+        return 0
+    return step_ms - (elapsed_ms % step_ms)
+
+
+def _ms_until_next_bar_visual_change(hold_elapsed_ms: int) -> int:
+    if hold_elapsed_ms < BAR_VALUE_SWAP_MS:
+        return BAR_VALUE_SWAP_MS - hold_elapsed_ms
+
+    mode_elapsed_ms = hold_elapsed_ms % BAR_VALUE_SWAP_MS
+    if mode_elapsed_ms < BAR_VALUE_TRANSITION_MS:
+        return min(DISPLAY_FRAME_INTERVAL_MS, BAR_VALUE_TRANSITION_MS - mode_elapsed_ms)
+
+    return BAR_VALUE_SWAP_MS - mode_elapsed_ms
 
 
 def _page_items(items: list[dict[str, Any]], page_index: int) -> list[dict[str, Any]]:
