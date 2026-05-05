@@ -90,7 +90,7 @@ python3 -m microstatus_display_client.main
 - `MICROSTATUS_DISPLAY_ID`
 - `MICROSTATUS_DISPLAY_NAME`
 - `MICROSTATUS_DISPLAY_LOCATION` optional
-- `MICROSTATUS_POLL_INTERVAL` optional, defaults to `1`
+- `MICROSTATUS_POLL_INTERVAL` optional, defaults to `2`
 - `MICROSTATUS_HEARTBEAT_INTERVAL` optional, defaults to `10`
 - `MICROSTATUS_DISPLAY_MODE` optional: `auto`, `ssd1306`, `console`, `null`
 - `MICROSTATUS_API_TOKEN` optional bearer token

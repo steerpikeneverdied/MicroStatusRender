@@ -45,7 +45,7 @@ def load_config() -> DisplayRuntimeConfig:
         display_id=display_id,
         display_name=display_name,
         location=os.getenv("MICROSTATUS_DISPLAY_LOCATION"),
-        poll_interval=max(1.0, _read_float(os.getenv("MICROSTATUS_POLL_INTERVAL"), 1.0)),
+        poll_interval=max(2.0, _read_float(os.getenv("MICROSTATUS_POLL_INTERVAL"), 2.0)),
         mode=(os.getenv("MICROSTATUS_DISPLAY_MODE") or "auto").strip().lower(),
         auth_token=os.getenv("MICROSTATUS_API_TOKEN"),
         heartbeat_interval=max(1.0, _read_float(os.getenv("MICROSTATUS_HEARTBEAT_INTERVAL"), 10.0)),
