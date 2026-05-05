@@ -1,0 +1,1 @@
+"""Microstatus display client package."""

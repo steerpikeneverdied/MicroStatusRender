@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE_PATH="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE_PATH" ]; do
+  SOURCE_DIR="$(cd -P "$(dirname "$SOURCE_PATH")" && pwd)"
+  LINK_TARGET="$(readlink "$SOURCE_PATH")"
+  if [[ "$LINK_TARGET" == /* ]]; then
+    SOURCE_PATH="$LINK_TARGET"
+  else
+    SOURCE_PATH="$SOURCE_DIR/$LINK_TARGET"
+  fi
+done
+
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE_PATH")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CLIENT_LINK="${MICROSTATUS_CLIENT_LINK:-$HOME/microstatus-display-client}"
+SERVICE_NAME="microstatus-display-client"
+SERVICE_SRC="$REPO_ROOT/systemd/$SERVICE_NAME.service"
+SERVICE_DEST="/etc/systemd/system/$SERVICE_NAME.service"
+ENV_FILE="/etc/default/$SERVICE_NAME"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+HOST_SHORT="$(hostname -s 2>/dev/null || echo microstatus-pi)"
+DEFAULT_DISPLAY_ID="$(printf '%s' "$HOST_SHORT" | tr '[:upper:]' '[:lower:]')"
+DEFAULT_DISPLAY_NAME="$HOST_SHORT"
+SERVICE_USER="${SERVICE_USER:-$(id -un)}"
+SERVICE_HOME="${SERVICE_HOME:-$HOME}"
+SELF_MANAGED_PULL_PATHS=(
+  "scripts/microserverupdate"
+  "scripts/install_microserverupdate_command.sh"
+)
+
+log() {
+  printf '[microserverupdate] %s\n' "$*"
+}
+
+warn() {
+  printf '[microserverupdate] WARN: %s\n' "$*" >&2
+}
+
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    warn "Missing required command: $1"
+    exit 1
+  fi
+}
+
+require_cmd git
+require_cmd "$PYTHON_BIN"
+require_cmd bash
+require_cmd sudo
+require_cmd systemctl
+
+if ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  warn "Not a git checkout: $REPO_ROOT"
+  exit 1
+fi
+
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+  else
+    "$@"
+  fi
+}
+
+is_self_managed_path() {
+  local candidate="$1"
+  local managed
+  for managed in "${SELF_MANAGED_PULL_PATHS[@]}"; do
+    if [ "$candidate" = "$managed" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+collect_dirty_paths() {
+  (
+    git -C "$REPO_ROOT" diff --name-only
+    git -C "$REPO_ROOT" diff --cached --name-only
+    git -C "$REPO_ROOT" ls-files --others --exclude-standard
+  ) | awk 'NF && !seen[$0]++'
+}
+
+prepare_repo_for_pull() {
+  local dirty_path
+  local -a dirty_paths=()
+  local -a blocking_paths=()
+
+  while IFS= read -r dirty_path; do
+    dirty_paths+=("$dirty_path")
+  done < <(collect_dirty_paths)
+
+  if [ "${#dirty_paths[@]}" -eq 0 ]; then
+    return 0
+  fi
+
+  for dirty_path in "${dirty_paths[@]}"; do
+    if ! is_self_managed_path "$dirty_path"; then
+      blocking_paths+=("$dirty_path")
+    fi
+  done
+
+  if [ "${#blocking_paths[@]}" -gt 0 ]; then
+    warn "Local repo changes would block update. Resolve these first:"
+    printf '  %s\n' "${blocking_paths[@]}" >&2
+    exit 1
+  fi
+
+  log "Discarding local changes in self-managed updater files before pull..."
+  git -C "$REPO_ROOT" restore --staged --worktree -- "${SELF_MANAGED_PULL_PATHS[@]}"
+}
+
+sync_repo_checkout() {
+  local current_branch
+  local upstream_ref
+  local local_rev
+  local upstream_rev
+  local base_rev
+
+  current_branch="$(git -C "$REPO_ROOT" branch --show-current)"
+  upstream_ref="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+
+  if [ -z "$upstream_ref" ]; then
+    warn "Branch $current_branch has no upstream tracking branch; leaving checkout as-is."
+    return 0
+  fi
+
+  log "Fetching remote updates..."
+  run_with_timeout 120 env GIT_TERMINAL_PROMPT=0 git -c credential.interactive=never -C "$REPO_ROOT" fetch origin
+
+  local_rev="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  upstream_rev="$(git -C "$REPO_ROOT" rev-parse "$upstream_ref")"
+  base_rev="$(git -C "$REPO_ROOT" merge-base HEAD "$upstream_ref")"
+
+  if [ "$local_rev" = "$upstream_rev" ]; then
+    log "Checkout already matches $upstream_ref"
+    return 0
+  fi
+
+  if [ "$local_rev" = "$base_rev" ]; then
+    log "Fast-forwarding $current_branch to $upstream_ref..."
+    git -C "$REPO_ROOT" merge --ff-only "$upstream_ref"
+    return 0
+  fi
+
+  if [ "$upstream_rev" = "$base_rev" ]; then
+    warn "Local branch $current_branch is ahead of $upstream_ref. Leaving repo as-is."
+    warn "If you meant to publish that local commit, push it manually."
+    return 0
+  fi
+
+  warn "Local branch $current_branch has diverged from $upstream_ref."
+  warn "microserverupdate will not auto-merge or rewrite $current_branch."
+  warn "Inspect with: git log --oneline --left-right --graph HEAD...$upstream_ref"
+  exit 1
+}
+
+refresh_client_link() {
+  mkdir -p "$(dirname "$CLIENT_LINK")"
+  if [ -e "$CLIENT_LINK" ] && [ ! -L "$CLIENT_LINK" ]; then
+    warn "$CLIENT_LINK exists and is not a symlink. Move it aside before running this updater."
+    exit 1
+  fi
+  ln -sfn "$REPO_ROOT" "$CLIENT_LINK"
+}
+
+log "Repo root: $REPO_ROOT"
+log "Refreshing sudo credentials..."
+sudo -v
+
+prepare_repo_for_pull
+sync_repo_checkout
+
+log "Refreshing display client link..."
+refresh_client_link
+log "Display client link: $CLIENT_LINK"
+
+if [ ! -d "$CLIENT_LINK/.venv" ]; then
+  log "Creating display client virtual environment..."
+  "$PYTHON_BIN" -m venv "$CLIENT_LINK/.venv"
+fi
+
+log "Installing display client requirements..."
+run_with_timeout 300 "$CLIENT_LINK/.venv/bin/pip" install --disable-pip-version-check --no-input -r "$CLIENT_LINK/requirements.txt"
+
+if [ ! -f "$ENV_FILE" ]; then
+  log "Creating default environment file at $ENV_FILE"
+  sudo tee "$ENV_FILE" >/dev/null <<ENVEOF
+MICROSTATUS_API_BASE=${MICROSTATUS_API_BASE:-http://127.0.0.1:18100}
+MICROSTATUS_DISPLAY_ID=${MICROSTATUS_DISPLAY_ID:-$DEFAULT_DISPLAY_ID}
+MICROSTATUS_DISPLAY_NAME=${MICROSTATUS_DISPLAY_NAME:-$DEFAULT_DISPLAY_NAME}
+MICROSTATUS_DISPLAY_LOCATION=${MICROSTATUS_DISPLAY_LOCATION:-}
+MICROSTATUS_POLL_INTERVAL=${MICROSTATUS_POLL_INTERVAL:-0.25}
+MICROSTATUS_DISPLAY_MODE=${MICROSTATUS_DISPLAY_MODE:-auto}
+MICROSTATUS_I2C_BUS=${MICROSTATUS_I2C_BUS:-1}
+MICROSTATUS_OLED_ADDRESS=${MICROSTATUS_OLED_ADDRESS:-0x3C}
+MICROSTATUS_OLED_WIDTH=${MICROSTATUS_OLED_WIDTH:-128}
+MICROSTATUS_OLED_HEIGHT=${MICROSTATUS_OLED_HEIGHT:-32}
+MICROSTATUS_ROWS=${MICROSTATUS_ROWS:-3}
+ENVEOF
+  warn "Review $ENV_FILE and update MICROSTATUS_API_BASE if it is still the placeholder."
+else
+  log "Keeping existing environment file at $ENV_FILE"
+fi
+
+log "Installing systemd unit..."
+sed \
+  -e "s|__MICROSTATUS_USER__|$SERVICE_USER|g" \
+  -e "s|__MICROSTATUS_HOME__|$SERVICE_HOME|g" \
+  "$SERVICE_SRC" | sudo tee "$SERVICE_DEST" >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl enable "$SERVICE_NAME" >/dev/null
+
+log "Restarting $SERVICE_NAME..."
+sudo systemctl restart "$SERVICE_NAME"
+
+CONFIG_FILE="/boot/firmware/config.txt"
+if [ -f /boot/config.txt ]; then
+  CONFIG_FILE="/boot/config.txt"
+fi
+if [ -f "$CONFIG_FILE" ] && ! grep -q 'i2c_arm_baudrate=400000' "$CONFIG_FILE"; then
+  log "Setting OLED I2C bus speed to 400000 in $CONFIG_FILE"
+  printf '\ndtparam=i2c_arm=on,i2c_arm_baudrate=400000\n' | sudo tee -a "$CONFIG_FILE" >/dev/null
+  warn "Reboot the Pi so the new 400000 Hz I2C bus speed takes effect."
+fi
+
+log "Service state: $(systemctl is-active "$SERVICE_NAME" || true)"
+sudo systemctl status "$SERVICE_NAME" --no-pager || true
+log "Done."
