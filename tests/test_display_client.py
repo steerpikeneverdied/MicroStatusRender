@@ -176,6 +176,32 @@ class DisplayClientTests(unittest.TestCase):
         self.assertEqual(frame["items"][1]["current_value"], 55.0)
         self.assertEqual(frame["items"][2]["value"], "Cooling")
 
+    def test_renderer_drops_visible_titles_missing_from_latest_payload(self):
+        display = FakeDisplay()
+        renderer = MicrostatusRenderer(display, monotonic=lambda: 0.0)
+        initial_payload = (
+            "Queue Depth Pending Jobs\n4\n"
+            "Temp\n21 UNIT=°C\n"
+            "Printer\nWaiting\n"
+        )
+        renderer.update_payload(initial_payload, now=0.0)
+        hold_time = (METRIC_TITLE_SCROLL_MS + METRIC_VALUE_REVEAL_MS + (2 * METRIC_VALUE_STAGGER_MS) + 2) / 1000
+        renderer.render_next_frame(now=0.0)
+        renderer.render_next_frame(now=(METRIC_TITLE_SCROLL_MS + 1) / 1000)
+        renderer.render_next_frame(now=hold_time)
+
+        updated_payload = (
+            "Temp\n22 UNIT=°C\n"
+            "Printer\nBAR MIN=0 MAX=100 CURRENT=73 UNIT=% SHOW_VALUE=1\n"
+        )
+        renderer.update_payload(updated_payload, now=hold_time)
+        frame = renderer.render_next_frame(now=hold_time)
+
+        self.assertEqual([item["title"] for item in frame["items"]], ["Temp", "Printer"])
+        self.assertEqual(frame["items"][0]["value"], "22")
+        self.assertEqual(frame["items"][1]["value_type"], "bar")
+        self.assertEqual(frame["items"][1]["current_value"], 73.0)
+
     def test_renderer_defers_new_titles_until_next_page_transition(self):
         display = FakeDisplay()
         renderer = MicrostatusRenderer(display, monotonic=lambda: 0.0)

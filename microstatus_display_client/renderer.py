@@ -711,8 +711,10 @@ def _merge_visible_items(active_items: list[dict[str, Any]], latest_items: list[
     merged: list[dict[str, Any]] = []
     for item in active_items:
         title_key = str(item.get("title") or "").casefold()
-        merged.append(latest_by_title.get(title_key, item))
-    return merged or [_fallback_item()]
+        latest_item = latest_by_title.get(title_key)
+        if latest_item is not None:
+            merged.append(latest_item)
+    return merged or _page_items(latest_items, 0)
 
 
 def _page_is_fallback(items: list[dict[str, Any]]) -> bool:
