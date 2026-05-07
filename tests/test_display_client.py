@@ -202,6 +202,33 @@ class DisplayClientTests(unittest.TestCase):
         self.assertEqual(next_frame["phase"], PHASE_TITLE_INTRO)
         self.assertEqual([item["title"] for item in next_frame["items"]], ["Queue"])
 
+    def test_clear_old_payload_replaces_visible_rows_immediately(self):
+        display = FakeDisplay()
+        renderer = MicrostatusRenderer(display, monotonic=lambda: 0.0)
+        initial_payload = (
+            "CLEAR_OLD\n"
+            "Print queue\n"
+            "south-kitchen-production-queue-alpha\n"
+            "Nozzle temp\n"
+            "2017 UNIT=°C\n"
+            "Phase\n"
+            "Idle\n"
+        )
+        renderer.update_payload(initial_payload, now=0.0)
+        renderer.render_next_frame(now=0.0)
+
+        cleaned_payload = (
+            "CLEAR\n"
+            "Printer state\n"
+            "printing\n"
+            "Nozzle temp\n"
+            "201.7 UNIT=°C\n"
+        )
+        renderer.update_payload(cleaned_payload, now=1.0)
+        frame = renderer.render_next_frame(now=1.0)
+
+        self.assertEqual([item["title"] for item in frame["items"]], ["Printer state", "Nozzle temp"])
+
     def test_static_hold_page_does_not_redraw_every_frame(self):
         display = FakeDisplay()
         renderer = MicrostatusRenderer(display, monotonic=lambda: 0.0)

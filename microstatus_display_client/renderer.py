@@ -67,11 +67,14 @@ def normalize_render_payload(payload: str | dict[str, Any]) -> dict[str, Any]:
             "layout": dict(DEFAULT_LAYOUT),
             "items": items or [_fallback_item()],
             "fallback": dict(DEFAULT_FALLBACK),
+            "clear_old": False,
         }
 
     normalized = str(payload or "").replace("\r", "")
     lines = [line.strip() for line in normalized.splitlines() if line.strip()]
-    if lines and lines[0].upper() == "CLEAR_OLD":
+    clear_old = False
+    if lines and lines[0].upper() in {"CLEAR", "CLEAR_OLD"}:
+        clear_old = True
         lines = lines[1:]
 
     items: list[dict[str, Any]] = []
@@ -89,6 +92,7 @@ def normalize_render_payload(payload: str | dict[str, Any]) -> dict[str, Any]:
         "layout": dict(DEFAULT_LAYOUT),
         "items": items or [_fallback_item()],
         "fallback": dict(DEFAULT_FALLBACK),
+        "clear_old": clear_old,
     }
 
 
@@ -182,7 +186,7 @@ class MicrostatusRenderer:
             return
         self._payload_signature = signature
         self._payload = normalized
-        if self._mode != "metric" or _page_is_fallback(self._active_page_items):
+        if self._mode != "metric" or _page_is_fallback(self._active_page_items) or normalized.get("clear_old"):
             self._activate_page(0, now=timestamp)
             self._last_frame = None
             self._last_visual_signature = None
