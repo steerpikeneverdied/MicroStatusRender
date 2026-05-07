@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import patch
 
-from microstatus_display_client.feed_setup import merged_env_body, parse_section_selection
+from microstatus_display_client.feed_setup import existing_config_value, merged_env_body, parse_section_selection
 
 
 class FeedSetupTests(unittest.TestCase):
@@ -25,6 +26,38 @@ class FeedSetupTests(unittest.TestCase):
         self.assertIn("MICROSTATUS_API_BASE=http://new:18100\n", body)
         self.assertIn("MICROSTATUS_POLL_INTERVAL=2\n", body)
         self.assertIn("MICROSTATUS_SELECTED_SECTIONS=docker-health,print-status\n", body)
+
+    def test_existing_config_value_prefers_saved_env_file_over_process_env(self):
+        with patch.dict("os.environ", {"MICROSTATUS_DISPLAY_ID": "stale-shell-id"}):
+            value = existing_config_value(
+                None,
+                {"MICROSTATUS_DISPLAY_ID": "rack-oled-print"},
+                ["MICROSTATUS_DISPLAY_ID"],
+                env_var="MICROSTATUS_DISPLAY_ID",
+                fallback="host-oled",
+            )
+
+        self.assertEqual(value, "rack-oled-print")
+
+    def test_existing_config_value_prefers_explicit_value_and_supports_aliases(self):
+        self.assertEqual(
+            existing_config_value(
+                "cli-id",
+                {"DISPLAY_ID": "saved-id"},
+                ["MICROSTATUS_DISPLAY_ID", "DISPLAY_ID"],
+                env_var="MICROSTATUS_DISPLAY_ID",
+            ),
+            "cli-id",
+        )
+        self.assertEqual(
+            existing_config_value(
+                None,
+                {"DISPLAY_LOCATION": "Rack"},
+                ["MICROSTATUS_DISPLAY_LOCATION", "DISPLAY_LOCATION"],
+                fallback="host",
+            ),
+            "Rack",
+        )
 
 
 if __name__ == "__main__":

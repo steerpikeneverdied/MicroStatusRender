@@ -84,6 +84,30 @@ def default_display_id() -> str:
     return cleaned or "microstatus-oled"
 
 
+def existing_config_value(
+    explicit_value: str | None,
+    env_values: dict[str, str],
+    env_file_keys: list[str],
+    *,
+    env_var: str | None = None,
+    fallback: str | None = None,
+) -> str:
+    if explicit_value and explicit_value.strip():
+        return explicit_value.strip()
+
+    for key in env_file_keys:
+        value = env_values.get(key)
+        if value and value.strip():
+            return value.strip()
+
+    if env_var:
+        value = os.getenv(env_var)
+        if value and value.strip():
+            return value.strip()
+
+    return fallback or ""
+
+
 def prompt_value(label: str, default: str | None = None) -> str:
     suffix = f" [{default}]" if default else ""
     value = input(f"{label}{suffix}: ").strip()
@@ -169,10 +193,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Choose which Agent Platform Microstatus data sections this OLED display subscribes to.",
     )
     parser.add_argument("--env-file", default=os.getenv("MICROSTATUS_ENV_FILE") or DEFAULT_ENV_FILE)
-    parser.add_argument("--api-base", default=os.getenv("MICROSTATUS_API_BASE"))
-    parser.add_argument("--display-id", default=os.getenv("MICROSTATUS_DISPLAY_ID"))
-    parser.add_argument("--display-name", default=os.getenv("MICROSTATUS_DISPLAY_NAME"))
-    parser.add_argument("--location", default=os.getenv("MICROSTATUS_DISPLAY_LOCATION"))
+    parser.add_argument("--api-base")
+    parser.add_argument("--display-id")
+    parser.add_argument("--display-name")
+    parser.add_argument("--location")
     parser.add_argument("--no-write-env", action="store_true")
     parser.add_argument("--no-restart", action="store_true")
     parser.add_argument(
@@ -189,19 +213,44 @@ def run(argv: list[str] | None = None) -> int:
     env_values = load_env_file(env_path)
 
     try:
-        api_base = normalize_api_base(
-            args.api_base
-            or env_values.get("MICROSTATUS_API_BASE", "")
-            or prompt_value("Agent Platform API URL", "http://127.0.0.1:18100")
+        api_base_default = existing_config_value(
+            args.api_base,
+            env_values,
+            ["MICROSTATUS_API_BASE"],
+            env_var="MICROSTATUS_API_BASE",
         )
-        display_id = prompt_value("Display ID", args.display_id or env_values.get("MICROSTATUS_DISPLAY_ID") or default_display_id())
+        api_base = normalize_api_base(
+            api_base_default or prompt_value("Agent Platform API URL", "http://127.0.0.1:18100")
+        )
+        display_id = prompt_value(
+            "Display ID",
+            existing_config_value(
+                args.display_id,
+                env_values,
+                ["MICROSTATUS_DISPLAY_ID", "DISPLAY_ID"],
+                env_var="MICROSTATUS_DISPLAY_ID",
+                fallback=default_display_id(),
+            ),
+        )
         display_name = prompt_value(
             "Display name",
-            args.display_name or env_values.get("MICROSTATUS_DISPLAY_NAME") or display_id,
+            existing_config_value(
+                args.display_name,
+                env_values,
+                ["MICROSTATUS_DISPLAY_NAME", "DISPLAY_NAME"],
+                env_var="MICROSTATUS_DISPLAY_NAME",
+                fallback=display_id,
+            ),
         )
         location = prompt_value(
             "Display location",
-            args.location or env_values.get("MICROSTATUS_DISPLAY_LOCATION") or platform.node() or "microscreen",
+            existing_config_value(
+                args.location,
+                env_values,
+                ["MICROSTATUS_DISPLAY_LOCATION", "DISPLAY_LOCATION", "LOCATION"],
+                env_var="MICROSTATUS_DISPLAY_LOCATION",
+                fallback=platform.node() or "microscreen",
+            ),
         )
 
         client = MicrostatusApiClient(
