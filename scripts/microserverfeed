@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE_PATH="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE_PATH" ]; do
+  SOURCE_DIR="$(cd -P "$(dirname "$SOURCE_PATH")" && pwd)"
+  LINK_TARGET="$(readlink "$SOURCE_PATH")"
+  if [[ "$LINK_TARGET" == /* ]]; then
+    SOURCE_PATH="$LINK_TARGET"
+  else
+    SOURCE_PATH="$SOURCE_DIR/$LINK_TARGET"
+  fi
+done
+
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE_PATH")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="${PYTHON_BIN_FALLBACK:-python3}"
+fi
+
+if [[ "${1:-}" == "--install-command" ]]; then
+  TARGET_DIR="${MICROSTATUS_COMMAND_DIR:-$HOME/.local/bin}"
+  TARGET_PATH="$TARGET_DIR/microserverfeed"
+  PATH_LINE="export PATH=\"$TARGET_DIR:\$PATH\""
+
+  mkdir -p "$TARGET_DIR"
+  cat >"$TARGET_PATH" <<EOF
+#!/usr/bin/env bash
+exec bash "$REPO_ROOT/scripts/microserverfeed" "\$@"
+EOF
+  chmod +x "$TARGET_PATH"
+
+  if [ "${MICROSTATUS_SKIP_SHELL_PROFILE:-}" != "1" ]; then
+    for rc_file in "$HOME/.bashrc" "$HOME/.profile" "$HOME/.zshrc"; do
+      if [ ! -f "$rc_file" ]; then
+        touch "$rc_file"
+      fi
+      if ! grep -Fqx "$PATH_LINE" "$rc_file"; then
+        printf '\n%s\n' "$PATH_LINE" >> "$rc_file"
+      fi
+    done
+  fi
+
+  printf '[microserverfeed] Installed wrapper at %s\n' "$TARGET_PATH"
+  printf '[microserverfeed] Run: source ~/.bashrc\n'
+  printf '[microserverfeed] Then run: microserverfeed\n'
+  exit 0
+fi
+
+cd "$REPO_ROOT"
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  exec "$PYTHON_BIN" -m microstatus_display_client.feed_setup "$@"
+fi
+
+if [ "${MICROSERVERFEED_NO_SUDO:-}" != "1" ] && [ "$(id -u)" -ne 0 ]; then
+  exec sudo -E "$PYTHON_BIN" -m microstatus_display_client.feed_setup "$@"
+fi
+
+exec "$PYTHON_BIN" -m microstatus_display_client.feed_setup "$@"

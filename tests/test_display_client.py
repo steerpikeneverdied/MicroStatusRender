@@ -1,4 +1,5 @@
 import io
+import json
 import sys
 import unittest
 from dataclasses import replace
@@ -477,6 +478,63 @@ class DisplayClientTests(unittest.TestCase):
             body = client.fetch_render_body()
 
         self.assertEqual(body, "CLEAR_OLD\nStatus\nIdle\n")
+
+    def test_api_client_lists_sections(self):
+        config = MicrostatusClientConfig(
+            api_base="http://127.0.0.1:18100",
+            display_id="display-1",
+            display_name="Display One",
+        )
+        client = MicrostatusApiClient(config)
+
+        class _FakeResponse:
+            def read(self):
+                return b'[{"key": "print-status", "name": "Print status"}]'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        with patch("microstatus_display_client.client.request.urlopen", return_value=_FakeResponse()):
+            sections = client.list_sections()
+
+        self.assertEqual(sections[0]["key"], "print-status")
+
+    def test_api_client_subscribes_display_to_sections(self):
+        config = MicrostatusClientConfig(
+            api_base="http://127.0.0.1:18100",
+            display_id="desk oled",
+            display_name="Desk OLED",
+        )
+        client = MicrostatusApiClient(config)
+        captured = {}
+
+        class _FakeResponse:
+            def read(self):
+                return b'{"ok": true}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        def fake_urlopen(req, timeout):
+            captured["url"] = req.full_url
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _FakeResponse()
+
+        with patch("microstatus_display_client.client.request.urlopen", side_effect=fake_urlopen):
+            client.subscribe_display_to_sections(
+                section_keys=["docker-health", "print-status"],
+                layout={"rows": 3},
+            )
+
+        self.assertEqual(captured["url"], "http://127.0.0.1:18100/microstatus/displays/desk%20oled/subscriptions")
+        self.assertEqual(captured["body"]["section_keys"], ["docker-health", "print-status"])
+        self.assertEqual(captured["body"]["layout_json"], {"rows": 3})
 
 
 if __name__ == "__main__":

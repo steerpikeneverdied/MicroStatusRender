@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import Any
-from urllib import error, request
+from urllib import error, parse, request
 
 
 class MicrostatusApiError(Exception):
@@ -52,7 +52,7 @@ class MicrostatusApiClient:
     ) -> dict[str, Any]:
         return self._request_json(
             "POST",
-            f"/microstatus/displays/{self.config.display_id}/heartbeat",
+            f"/microstatus/displays/{self._quoted_display_id()}/heartbeat",
             {
                 "display_name": self.config.display_name,
                 "location": self.config.location,
@@ -65,16 +65,40 @@ class MicrostatusApiClient:
     def fetch_render_body(self) -> str:
         return self._request_text(
             "GET",
-            f"/microstatus/displays/{self.config.display_id}/render/plain",
+            f"/microstatus/displays/{self._quoted_display_id()}/render/plain",
             accept="text/plain",
         )
+
+    def list_sections(self) -> list[dict[str, Any]]:
+        result = self._request_json("GET", "/microstatus/sections")
+        if isinstance(result, list):
+            return result
+        raise MicrostatusApiError("Microstatus API returned an unexpected sections payload shape.")
+
+    def subscribe_display_to_sections(
+        self,
+        *,
+        section_keys: list[str],
+        layout: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/microstatus/displays/{self._quoted_display_id()}/subscriptions",
+            {
+                "section_keys": section_keys,
+                "layout_json": layout,
+            },
+        )
+
+    def _quoted_display_id(self) -> str:
+        return parse.quote(self.config.display_id, safe="")
 
     def _request_json(
         self,
         method: str,
         path: str,
         payload: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> Any:
         url = f"{self.config.api_base.rstrip('/')}{path}"
         headers = {"Accept": "application/json"}
         data = None
@@ -102,7 +126,7 @@ class MicrostatusApiClient:
             parsed = json.loads(raw_body)
         except json.JSONDecodeError as exc:
             raise MicrostatusApiError("Microstatus API returned invalid JSON.") from exc
-        if not isinstance(parsed, dict):
+        if not isinstance(parsed, (dict, list)):
             raise MicrostatusApiError("Microstatus API returned an unexpected payload shape.")
         return parsed
 

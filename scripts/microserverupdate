@@ -27,6 +27,7 @@ SERVICE_USER="${SERVICE_USER:-$(id -un)}"
 SERVICE_HOME="${SERVICE_HOME:-$HOME}"
 SELF_MANAGED_PULL_PATHS=(
   "scripts/microserverupdate"
+  "scripts/microserverfeed"
   "scripts/install_microserverupdate_command.sh"
 )
 
@@ -168,6 +169,18 @@ refresh_client_link() {
   ln -sfn "$REPO_ROOT" "$CLIENT_LINK"
 }
 
+install_microserverfeed_command() {
+  local target_dir="${MICROSTATUS_COMMAND_DIR:-$HOME/.local/bin}"
+  local target_path="$target_dir/microserverfeed"
+  mkdir -p "$target_dir"
+  cat >"$target_path" <<EOF
+#!/usr/bin/env bash
+exec bash "$REPO_ROOT/scripts/microserverfeed" "\$@"
+EOF
+  chmod +x "$target_path"
+  log "Feed selector command: $target_path"
+}
+
 log "Repo root: $REPO_ROOT"
 log "Refreshing sudo credentials..."
 sudo -v
@@ -178,6 +191,7 @@ sync_repo_checkout
 log "Refreshing display client link..."
 refresh_client_link
 log "Display client link: $CLIENT_LINK"
+install_microserverfeed_command
 
 if [ ! -d "$CLIENT_LINK/.venv" ]; then
   log "Creating display client virtual environment..."

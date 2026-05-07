@@ -62,10 +62,19 @@ source ~/.bashrc
 microserverupdate
 ```
 
+The same install command also installs `microserverfeed`. After `microserverupdate`, run:
+
+```bash
+microserverfeed
+```
+
+`microserverfeed` asks Agent Platform for the available Microstatus data sections, prints them as a numbered list, lets you enter values such as `1 3`, registers this renderer, subscribes it to the chosen sections, updates `/etc/default/microstatus-display-client`, and restarts the renderer service.
+
 `microserverupdate` will:
 
 - fast-forward this repo when an upstream branch is configured
 - refresh the `~/microstatus-display-client` link to this checkout
+- ensure the `microserverfeed` command exists in `~/.local/bin`
 - create the renderer virtual environment
 - install renderer requirements
 - create `/etc/default/microstatus-display-client` only when missing
@@ -74,6 +83,16 @@ microserverupdate
 - preserve your existing `/etc/default/microstatus-display-client` if present
 
 If the env file does not exist yet, the updater creates a starter file and tells you to review `MICROSTATUS_API_BASE`.
+
+## Feed Selection
+
+Run the feed selector whenever you want to change what this screen shows:
+
+```bash
+microserverfeed
+```
+
+The numbered list comes from Agent Platform, so the renderer does not need local knowledge of feed logic. Current server sections may include choices such as `home-setup`, `docker-health`, and `print-status`.
 
 ## Manual Run
 
